@@ -72,7 +72,8 @@ if ! require_safe_php_candidate "$PHP_VER"; then
 	php_upgrade_build="$php_upgrade_backup/php-build"
 	mkdir -p "$php_upgrade_build"
 	php_upgrade_release=$(git describe --tags --exact-match 2>/dev/null || true)
-	php_upgrade_bundle=php-8.4.27-ubuntu22.04-amd64.tar.xz
+	php_upgrade_source_version=$(python3 -c 'import json,sys; print(json.load(open("tools/php-build-lock.json"))["branches"][sys.argv[1]]["php_version"])' "$PHP_VER")
+	php_upgrade_bundle="php-$php_upgrade_source_version-ubuntu22.04-amd64.tar.xz"
 	php_upgrade_release_url="https://github.com/bushixiucai/mailinabox/releases/download/$php_upgrade_release"
 	php_upgrade_fetched=0
 	if [ -n "$php_upgrade_release" ] && [ "$(dpkg --print-architecture)" = amd64 ]; then

@@ -12,6 +12,10 @@ source /etc/os-release
 	echo 'This fork supports Ubuntu 22.04 LTS only.' >&2
 	exit 1
 }
+[ "$(dpkg --print-architecture)" = amd64 ] || {
+	echo 'The v80 package release supports Ubuntu 22.04 amd64 only.' >&2
+	exit 1
+}
 if ! command -v git >/dev/null 2>&1; then
 	apt-get update -qq
 	DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates

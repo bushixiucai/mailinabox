@@ -25,13 +25,14 @@ checked = {line.split(None, 1)[1].lstrip('*').removeprefix('./')
            for line in (output / 'SHA256SUMS').read_text().splitlines() if line.strip()}
 if any(archive.name not in checked for archive in output.glob('*.deb')):
     sys.exit('An unverified Debian package exists in the build output.')
-if p.get('php_version') != '8.4.27' or p.get('package_version') != '8.4.27-1+urmail1':
+if any(p.get(key) != locked[key] for key in ('php_version', 'package_version')):
     sys.exit('Unexpected PHP build provenance. Review a new pinned build before installing.')
 if p.get('status') != 'built':
     sys.exit('Build has not completed successfully.')
 if p.get('distribution') != 'ubuntu22.04':
     sys.exit('This installer requires an Ubuntu 22.04 build.')
 PY
+php_build_expected_version=$(python3 -c 'import json; print(json.load(open("tools/php-build-lock.json"))["branches"]["8.4"]["package_version"])')
 php_build_arch=$(dpkg --print-architecture)
 php_build_packages=()
 php_build_names=' '
@@ -41,7 +42,7 @@ for archive in "$php_build_output"/*.deb; do
 		php8.4|php8.4-cli|php8.4-common|php8.4-fpm|php8.4-bcmath|php8.4-curl|php8.4-gd|php8.4-gmp|php8.4-intl|php8.4-mbstring|php8.4-opcache|php8.4-readline|php8.4-soap|php8.4-sqlite3|php8.4-xml|php8.4-zip) ;;
 		*) continue ;;
 	esac
-	[ "$(dpkg-deb -f "$archive" Version)" = 8.4.27-1+urmail1 ]
+	[ "$(dpkg-deb -f "$archive" Version)" = "$php_build_expected_version" ]
 	architecture=$(dpkg-deb -f "$archive" Architecture)
 	[ "$architecture" = all ] || [ "$architecture" = "$php_build_arch" ]
 	php_build_packages+=("$archive")

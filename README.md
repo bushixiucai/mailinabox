@@ -52,7 +52,7 @@ For more information on how Mail-in-a-Box handles your privacy, see the [securit
 Installation and fork updates
 -----------------------------
 
-This fork supports Ubuntu 22.04 LTS. Its installer and update source are this repository:
+This fork supports Ubuntu 22.04 LTS on amd64. Its installer and update source are this repository:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/bushixiucai/mailinabox/main/setup.sh | sudo -E bash
@@ -90,11 +90,15 @@ You can also build and inspect artifacts before installing them:
 
 ```sh
 PHP_BUILD_JOBS=4 tools/build-php.sh /absolute/empty-build-output
+tools/test-built-php.sh /absolute/empty-build-output /absolute/empty-qa-output
+sudo tools/install-built-php.sh /absolute/empty-build-output --verify-only
 sudo tools/install-built-php.sh /absolute/empty-build-output
 ```
 
 The output includes Debian packages, SHA256SUMS, provenance, dependency inventory and
-build logs. Installation verifies package identities and keeps FPM masked; the scoped
+build logs. The separate QA runner checks 82 selected upstream regressions covering
+OOM, multipart and cross-request state; it reports expected skips explicitly. The full
+upstream test suite is not run by the package build. Installation verifies package identities and keeps FPM masked; the scoped
 upgrade subsequently migrates applications before reopening traffic. To update PHP again,
 review a new official release, update the lock file and hashes, then rebuild and validate.
 
