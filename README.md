@@ -74,7 +74,9 @@ complete installer until it succeeds; subsequent runs use the scoped upgrade.
 The target combination is PHP 8.4.27+, Nextcloud 34.0.5, Contacts 8.9.2, Calendar
 6.6.3, user_external 4.0.0, Roundcube 1.7.5, CardDAV 5.1.4 and Z-Push 2.7.6.
 Mail, calendar, contacts, ActiveSync and existing webmail plugin features are retained.
-SMTP, IMAP and the Python management service remain separate.
+SMTP, IMAP and the Python management service remain separate. Existing-server upgrades
+do not rerun mail configuration: `/etc/default/postgrey` (including a custom `--delay=0`)
+and `/etc/postfix/main.cf` (including sender/recipient restrictions) are preserved.
 
 For an already updated checkout, the scoped upgrade command is:
 

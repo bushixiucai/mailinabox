@@ -66,7 +66,16 @@ esac
 set -e
 cp -a /fixture/checkout /work
 export PATH=/work/bin:$PATH
-mkdir -p /storage /etc/nginx/conf.d /run/php /usr/local/lib/mailinabox/env/bin
+mkdir -p /storage /etc/nginx/conf.d /run/php /usr/local/lib/mailinabox/env/bin /etc/default /etc/postfix
+cat > /etc/default/postgrey <<'POSTGREY'
+POSTGREY_OPTS="--inet=127.0.0.1:10023 --delay=0"
+POSTGREY
+cat > /etc/postfix/main.cf <<'POSTFIX'
+smtpd_sender_restrictions = reject_non_fqdn_sender, permit_sasl_authenticated
+smtpd_recipient_restrictions = permit_mynetworks, reject_unauth_destination
+# Preserve operator settings byte for byte.
+POSTFIX
+sha256sum /etc/default/postgrey /etc/postfix/main.cf > /mail-config-before.sha256
 printf 'STORAGE_ROOT=/storage\\n' > /etc/mailinabox.conf
 cat > /usr/sbin/php-fpm8.4 <<'PHP'
 #!/bin/bash
@@ -83,6 +92,8 @@ chmod +x /usr/local/lib/mailinabox/env/bin/python3
 set +e
 bash /work/setup/upgrade-php.sh
 result=$?
+sha256sum --check --strict /mail-config-before.sha256
+echo MAIL_CONFIG_UNCHANGED
 echo "RESULT=$result"
 [ ! -e /var/lib/mailinabox/php-maintenance ] || echo 'MARKER=closed'
 cat /events
@@ -92,7 +103,8 @@ exit 0
                 [DOCKER, 'run', '--rm', '--network', 'none', '-v', temporary + ':/fixture:ro',
                  '-e', 'FAILURE=' + failure, '-e', 'SERVICE_EXISTS=' + service_exists,
                  IMAGE, 'bash', '/fixture/run.sh'], text=True, capture_output=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("MAIL_CONFIG_UNCHANGED", result.stdout)
             return result.stdout
 
     def test_application_failure_keeps_maintenance_and_never_starts_fpm(self):
