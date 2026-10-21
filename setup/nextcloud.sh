@@ -1,251 +1,171 @@
 #!/bin/bash
-# Nextcloud
-##########################
+# Nextcloud contacts/calendar installation and sequential database migration.
 
-source setup/functions.sh # load our functions
-source /etc/mailinabox.conf # load global vars
+source setup/functions.sh
+source /etc/mailinabox.conf
+source setup/nextcloud-migration.sh
 
-# ### Installing Nextcloud
+NEXTCLOUD_MANIFEST=setup/nextcloud-versions.txt
+nextcloud_ver=34.0.5
+NEXTCLOUD_ROOT=/usr/local/lib/owncloud
+NEXTCLOUD_MAINTENANCE=/var/lib/mailinabox/php-maintenance
 
 echo "Installing Nextcloud (contacts/calendar)..."
 
-# Nextcloud core and app (plugin) versions to install.
-# With each version we store a hash to ensure we install what we expect.
+# Read only the configuration, without bootstrapping an old core with a new PHP.
+CURRENT_NEXTCLOUD_VER=""
+if [ -f "$STORAGE_ROOT/owncloud/config.php" ]; then
+	CURRENT_NEXTCLOUD_VER=$(php"$PHP_VER" -r 'include($argv[1]); echo $CONFIG["version"] ?? "";' "$STORAGE_ROOT/owncloud/config.php")
+	if [ -z "$CURRENT_NEXTCLOUD_VER" ]; then
+		echo "Existing Nextcloud configuration has no version. Refusing a fresh installation." >&2
+		exit 1
+	fi
+fi
+REINSTALL_NEXTCLOUD=0
+[ -d "$NEXTCLOUD_ROOT" ] || REINSTALL_NEXTCLOUD=1
+NEXTCLOUD_PLAN=$(nextcloud_plan "$CURRENT_NEXTCLOUD_VER" "$NEXTCLOUD_MANIFEST" "$REINSTALL_NEXTCLOUD")
 
-# Nextcloud core
-# --------------
-# * See https://nextcloud.com/changelog for the latest version.
-# * Check https://docs.nextcloud.com/server/latest/admin_manual/installation/system_requirements.html
-#   for whether it supports the version of PHP available on this machine.
-# * Since Nextcloud only supports upgrades from consecutive major versions,
-#   we automatically install intermediate versions as needed.
-# * The hash is the SHA1 hash of the ZIP package, which you can find by just running this script and
-#   copying it from the error message when it doesn't match what is below.
-nextcloud_ver=27.1.11
-nextcloud_hash=9f30c01a021c2e5a9e7baff119955afb3c552ebc
+# Existing data must only be changed behind the persistent web/cron maintenance
+# gate. The orchestration script preserves this gate on every failure.
+if [ -n "$CURRENT_NEXTCLOUD_VER" ] && [ -n "$NEXTCLOUD_PLAN" ] && [ ! -e "$NEXTCLOUD_MAINTENANCE" ]; then
+	echo "Run sudo setup/upgrade-php.sh before migrating Nextcloud." >&2
+	exit 1
+fi
 
-# Nextcloud apps
-# --------------
-# * Find the most recent tag that is compatible with the Nextcloud version above by:
-#   https://github.com/nextcloud-releases/contacts/tags
-#   https://github.com/nextcloud-releases/calendar/tags
-#   https://github.com/nextcloud/user_external/tags
-#
-# * For these three packages, contact, calendar and user_external, the hash is the SHA1 hash of
-# the release tarball (from the releases/download URL, not the source archive), which you can
-# find by running: curl -sL <url> | sha1sum
+install_nextcloud_php() {
+	local runtime=$1
+	require_safe_php_candidate "$runtime"
+	apt_install php"$runtime"-cli php"$runtime"-sqlite3 php"$runtime"-gd php"$runtime"-curl \
+		php"$runtime"-xml php"$runtime"-mbstring php"$runtime"-zip php"$runtime"-apcu \
+		php"$runtime"-intl php"$runtime"-imagick php"$runtime"-gmp php"$runtime"-bcmath
+	require_safe_php "$runtime"
+	tools/editconf.py /etc/php/"$runtime"/mods-available/apcu.ini -c ';' apc.enabled=1 apc.enable_cli=1
+}
 
-# Always ensure the versions are supported, see https://apps.nextcloud.com/apps/contacts
-contacts_ver=5.5.4
-contacts_hash=c4e3f2183a0088b829f8aa1b3af1f87c9a4c46a2
+# Install PHP 8.2 only when a pre-31 database actually needs the bridge.
+# New installations use the final PHP runtime directly.
+if [ -n "$CURRENT_NEXTCLOUD_VER" ] && [[ "$NEXTCLOUD_PLAN" == *" 8.2 "* ]]; then
+	install_nextcloud_php 8.2
+fi
+install_nextcloud_php "$PHP_VER"
+apt_install curl php"$PHP_VER" php"$PHP_VER"-fpm
 
-# Always ensure the versions are supported, see https://apps.nextcloud.com/apps/calendar
-calendar_ver=4.7.20
-calendar_hash=12d876904e227156e39ca4335b18481b42a6d00f
-
-# Always ensure the versions are supported, see https://apps.nextcloud.com/apps/user_external
-user_external_ver=3.4.0
-user_external_hash=7f9d8f4dd6adb85a0e3d7622d85eeb7bfe53f3b4
-
-# Developer advice (test plan)
-# ----------------------------
-# When upgrading above versions, how to test?
-#
-# 1. Enter your server instance (or on the Vagrant image)
-# 1. Git clone <your fork>
-# 2. Git checkout <your fork>
-# 3. Run `sudo ./setup/nextcloud.sh`
-# 4. Ensure the installation completes. If any hashes mismatch, correct them.
-# 5. Enter nextcloud web, run following tests:
-# 5.1 You still can create, edit and delete contacts
-# 5.2 You still can create, edit and delete calendar events
-# 5.3 You still can create, edit and delete users
-# 5.4 Go to Administration > Logs and ensure no new errors are shown
-
-# Clear prior packages and install dependencies from apt.
-apt-get purge -qq -y owncloud* # we used to use the package manager
-
-apt_install curl php"${PHP_VER}" php"${PHP_VER}"-fpm \
-	php"${PHP_VER}"-cli php"${PHP_VER}"-sqlite3 php"${PHP_VER}"-gd php"${PHP_VER}"-imap php"${PHP_VER}"-curl \
-	php"${PHP_VER}"-dev php"${PHP_VER}"-gd php"${PHP_VER}"-xml php"${PHP_VER}"-mbstring php"${PHP_VER}"-zip php"${PHP_VER}"-apcu \
-	php"${PHP_VER}"-intl php"${PHP_VER}"-imagick php"${PHP_VER}"-gmp php"${PHP_VER}"-bcmath
-
-# Enable APC before Nextcloud tools are run.
-tools/editconf.py /etc/php/"$PHP_VER"/mods-available/apcu.ini -c ';' \
-	apc.enabled=1 \
-	apc.enable_cli=1
+# Before replacing any code, keep a complete copy of storage and a consistent
+# SQLite backup. Restoration must restore data, configuration and code together.
+BACKUP_DIRECTORY=""
+if [ -n "$NEXTCLOUD_PLAN" ]; then
+	mkdir -p "$STORAGE_ROOT/owncloud-backup"
+	BACKUP_DIRECTORY=$(mktemp -d "$STORAGE_ROOT/owncloud-backup/upgrade-XXXXXXXX")
+fi
+if [ -n "$NEXTCLOUD_PLAN" ] && [ -n "$CURRENT_NEXTCLOUD_VER" ]; then
+	echo "Backing up Nextcloud to $BACKUP_DIRECTORY"
+	cp -a "$STORAGE_ROOT/owncloud" "$BACKUP_DIRECTORY/storage"
+	if [ -d "$NEXTCLOUD_ROOT" ]; then
+		cp -a "$NEXTCLOUD_ROOT" "$BACKUP_DIRECTORY/owncloud-install"
+	fi
+	python3 - "$STORAGE_ROOT/owncloud/owncloud.db" "$BACKUP_DIRECTORY/storage/owncloud.db" <<'PY'
+import pathlib
+import sqlite3
+import sys
+source, destination = sys.argv[1:]
+if not pathlib.Path(source).is_file():
+    sys.exit('Existing Nextcloud configuration has no SQLite database. Refusing to replace code.')
+with sqlite3.connect('file:' + source + '?mode=ro', uri=True) as database:
+    if database.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+        sys.exit('Nextcloud SQLite integrity check failed.')
+    # Remove the copied main database: sqlite3.backup replaces it consistently,
+    # including any committed transactions which were still in a WAL file.
+    pathlib.Path(destination).unlink()
+    for suffix in ('-wal', '-shm'):
+        pathlib.Path(destination + suffix).unlink(missing_ok=True)
+    with sqlite3.connect(destination) as backup:
+        database.backup(backup)
+PY
+	# config_is_read_only prevents both database migrations and maintenance changes.
+	sed -i -e '/config_is_read_only/d' "$STORAGE_ROOT/owncloud/config.php"
+fi
 
 InstallNextcloud() {
-
-	version=$1
-	hash=$2
-	version_contacts=$3
-	hash_contacts=$4
-	version_calendar=$5
-	hash_calendar=$6
-	version_user_external=${7:-}
-	hash_user_external=${8:-}
-
-	echo
-	echo "Upgrading to Nextcloud version $version"
-	echo
-
-	# Download and verify
-	wget_verify "https://download.nextcloud.com/server/releases/nextcloud-$version.zip" "$hash" /tmp/nextcloud.zip
-
-	# Remove the current owncloud/Nextcloud
-	rm -rf /usr/local/lib/owncloud
-
-	# Extract ownCloud/Nextcloud
-	unzip -q /tmp/nextcloud.zip -d /usr/local/lib
-	mv /usr/local/lib/nextcloud /usr/local/lib/owncloud
-	rm -f /tmp/nextcloud.zip
-
-	# The two apps we actually want are not in Nextcloud core. Download the releases from
-	# their github repositories.
-	mkdir -p /usr/local/lib/owncloud/apps
-
-	wget_verify "https://github.com/nextcloud-releases/contacts/releases/download/v$version_contacts/contacts-v$version_contacts.tar.gz" "$hash_contacts" /tmp/contacts.tgz
-	tar xf /tmp/contacts.tgz -C /usr/local/lib/owncloud/apps/
-	rm /tmp/contacts.tgz
-
-	wget_verify "https://github.com/nextcloud-releases/calendar/releases/download/v$version_calendar/calendar-v$version_calendar.tar.gz" "$hash_calendar" /tmp/calendar.tgz
-	tar xf /tmp/calendar.tgz -C /usr/local/lib/owncloud/apps/
-	rm /tmp/calendar.tgz
-
-	# Starting with Nextcloud 15, the app user_external is no longer included in Nextcloud core,
-	# we will install from their github repository.
-	if [ -n "$version_user_external" ]; then
-		wget_verify "https://github.com/nextcloud-releases/user_external/releases/download/v$version_user_external/user_external-v$version_user_external.tar.gz" "$hash_user_external" /tmp/user_external.tgz
-		tar -xf /tmp/user_external.tgz -C /usr/local/lib/owncloud/apps/
-		rm /tmp/user_external.tgz
-	fi
-
-	# Fix weird permissions.
-	chmod 750 /usr/local/lib/owncloud/{apps,config}
-
-	# Create a symlink to the config.php in STORAGE_ROOT (for upgrades we're restoring the symlink we previously
-	# put in, and in new installs we're creating a symlink and will create the actual config later).
-	ln -sf "$STORAGE_ROOT/owncloud/config.php" /usr/local/lib/owncloud/config/config.php
-
-	# Make sure permissions are correct or the upgrade step won't run.
-	# $STORAGE_ROOT/owncloud may not yet exist, so use -f to suppress
-	# that error.
-	chown -f -R www-data:www-data "$STORAGE_ROOT/owncloud" /usr/local/lib/owncloud || /bin/true
-
-	# If this isn't a new installation, immediately run the upgrade script.
-	# Then check for success (0=ok and 3=no upgrade needed, both are success).
-	if [ -e "$STORAGE_ROOT/owncloud/owncloud.db" ]; then
-		# ownCloud 8.1.1 broke upgrades. It may fail on the first attempt, but
-		# that can be OK.
-		sudo -u www-data php"$PHP_VER" /usr/local/lib/owncloud/occ upgrade
-		E=$?
-		if [ $E -ne 0 ] && [ $E -ne 3 ]; then
-			echo "Trying ownCloud upgrade again to work around ownCloud upgrade bug..."
-			sudo -u www-data php"$PHP_VER" /usr/local/lib/owncloud/occ upgrade
-			E=$?
-			if [ $E -ne 0 ] && [ $E -ne 3 ]; then exit 1; fi
-			sudo -u www-data php"$PHP_VER" /usr/local/lib/owncloud/occ maintenance:mode --off
-			echo "...which seemed to work."
+	local version=$1 runtime=$2 core_hash=$3
+	local contacts_version=$4 contacts_hash=$5 calendar_version=$6 calendar_hash=$7
+	local external_version=$8 external_hash=$9
+	local stage app app_version app_hash
+	stage=$(mktemp -d /usr/local/lib/.nextcloud-stage-XXXXXXXX)
+	echo "Preparing Nextcloud $version with PHP $runtime"
+	# Verify every archive before changing the live installation or its database.
+	nextcloud_download "https://download.nextcloud.com/server/releases/nextcloud-$version.zip" "$core_hash" "$stage/core.zip"
+	unzip -q "$stage/core.zip" -d "$stage"
+	for app in contacts calendar user_external; do
+		case "$app" in
+			contacts) app_version=$contacts_version; app_hash=$contacts_hash ;;
+			calendar) app_version=$calendar_version; app_hash=$calendar_hash ;;
+			user_external) app_version=$external_version; app_hash=$external_hash ;;
+		esac
+		[ "$app_version" != - ] || continue
+		nextcloud_download "https://github.com/nextcloud-releases/$app/releases/download/v$app_version/$app-v$app_version.tar.gz" "$app_hash" "$stage/$app.tgz"
+		tar xf "$stage/$app.tgz" -C "$stage/nextcloud/apps/"
+	done
+	# Check that pinned app metadata really permits this major release.
+	python3 - "$stage/nextcloud/apps" "${version%%.*}" <<'PY'
+import pathlib
+import sys
+import xml.etree.ElementTree as ET
+apps, major = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+for name in ('contacts', 'calendar', 'user_external'):
+    manifest = apps / name / 'appinfo/info.xml'
+    if not manifest.exists() and name == 'user_external' and major == 30:
+        continue
+    dependency = ET.parse(manifest).getroot().find('dependencies/nextcloud')
+    if dependency is None or not int(dependency.attrib['min-version']) <= major <= int(dependency.attrib['max-version']):
+        sys.exit('Incompatible Nextcloud application: ' + name)
+PY
+	if [ -f "$STORAGE_ROOT/owncloud/owncloud.db" ]; then
+		# There is no officially compatible user_external release for NC30.
+		# Disable it without uninstalling its tables, then restore it at NC31.
+		if [ "${version%%.*}" = 30 ] && [ -d "$NEXTCLOUD_ROOT/apps/user_external" ]; then
+			sudo -u www-data php"$runtime" "$NEXTCLOUD_ROOT/occ" config:system:delete user_backends
+			sudo -u www-data php"$runtime" "$NEXTCLOUD_ROOT/occ" app:disable user_external
 		fi
-
-		# Add missing indices. NextCloud didn't include this in the normal upgrade because it might take some time.
-		sudo -u www-data php"$PHP_VER" /usr/local/lib/owncloud/occ db:add-missing-indices
-		sudo -u www-data php"$PHP_VER" /usr/local/lib/owncloud/occ db:add-missing-primary-keys
-
-		# Run conversion to BigInt identifiers, this process may take some time on large tables.
-		sudo -u www-data php"$PHP_VER" /usr/local/lib/owncloud/occ db:convert-filecache-bigint --no-interaction
+	fi
+	chmod 750 "$stage/nextcloud/"{apps,config}
+	ln -sf "$STORAGE_ROOT/owncloud/config.php" "$stage/nextcloud/config/config.php"
+	chown -R www-data:www-data "$stage/nextcloud"
+	if [ -d "$NEXTCLOUD_ROOT" ]; then
+		mv "$NEXTCLOUD_ROOT" "$BACKUP_DIRECTORY/before-$version"
+	fi
+	mv "$stage/nextcloud" "$NEXTCLOUD_ROOT"
+	rm -rf "$stage"
+	if [ -f "$STORAGE_ROOT/owncloud/owncloud.db" ]; then
+		nextcloud_occ_upgrade "$runtime"
+		sudo -u www-data php"$runtime" "$NEXTCLOUD_ROOT/occ" app:enable contacts
+		sudo -u www-data php"$runtime" "$NEXTCLOUD_ROOT/occ" app:enable calendar
+		if [ "$external_version" != - ]; then
+			sudo -u www-data php"$runtime" "$NEXTCLOUD_ROOT/occ" app:enable user_external
+		fi
+		nextcloud_occ_upgrade "$runtime"
+		sudo -u www-data php"$runtime" "$NEXTCLOUD_ROOT/occ" db:add-missing-indices
+		sudo -u www-data php"$runtime" "$NEXTCLOUD_ROOT/occ" db:add-missing-primary-keys
+		# Cron jobs will not execute in application maintenance mode. The outer
+		# PHP maintenance gate still blocks web requests and scheduled jobs.
+		sudo -u www-data php"$runtime" "$NEXTCLOUD_ROOT/occ" maintenance:mode --off
+		for _ in 1 2 3; do
+			sudo -u www-data php"$runtime" -f "$NEXTCLOUD_ROOT/cron.php"
+		done
+		sudo -u www-data php"$runtime" "$NEXTCLOUD_ROOT/occ" status --output=json | python3 -c '
+import json, sys
+status = json.load(sys.stdin)
+if not status.get("installed") or status.get("needsDbUpgrade") or status.get("versionstring") != sys.argv[1]:
+    sys.exit("Nextcloud did not finish the expected migration.")
+' "$version"
 	fi
 }
 
-# Current Nextcloud Version, #1623
-# Checking /usr/local/lib/owncloud/version.php shows version of the Nextcloud application, not the DB
-# $STORAGE_ROOT/owncloud is kept together even during a backup. It is better to rely on config.php than
-# version.php since the restore procedure can leave the system in a state where you have a newer Nextcloud
-# application version than the database.
-
-# If config.php exists, get version number, otherwise CURRENT_NEXTCLOUD_VER is empty.
-if [ -f "$STORAGE_ROOT/owncloud/config.php" ]; then
-	CURRENT_NEXTCLOUD_VER=$(php"$PHP_VER" -r "include(\"$STORAGE_ROOT/owncloud/config.php\"); echo(\$CONFIG['version']);")
-else
-	CURRENT_NEXTCLOUD_VER=""
-fi
-
-# If the Nextcloud directory is missing (never been installed before, or the nextcloud version to be installed is different
-# from the version currently installed, do the install/upgrade
-if [ ! -d /usr/local/lib/owncloud/ ] || [[ ! ${CURRENT_NEXTCLOUD_VER} =~ ^$nextcloud_ver ]]; then
-
-	# Stop php-fpm if running. If they are not running (which happens on a previously failed install), dont bail.
-	service php"$PHP_VER"-fpm stop &> /dev/null || /bin/true
-
-	# Backup the existing ownCloud/Nextcloud.
-	# Create a backup directory to store the current installation and database to
-	BACKUP_DIRECTORY=$STORAGE_ROOT/owncloud-backup/$(date +"%Y-%m-%d-%T")
-	mkdir -p "$BACKUP_DIRECTORY"
-	if [ -d /usr/local/lib/owncloud/ ]; then
-		echo "Upgrading Nextcloud --- backing up existing installation, configuration, and database to directory to $BACKUP_DIRECTORY..."
-		cp -r /usr/local/lib/owncloud "$BACKUP_DIRECTORY/owncloud-install"
-	fi
-	if [ -e "$STORAGE_ROOT/owncloud/owncloud.db" ]; then
-		cp "$STORAGE_ROOT/owncloud/owncloud.db" "$BACKUP_DIRECTORY"
-	fi
-	if [ -e "$STORAGE_ROOT/owncloud/config.php" ]; then
-		cp "$STORAGE_ROOT/owncloud/config.php" "$BACKUP_DIRECTORY"
-	fi
-
-	# If ownCloud or Nextcloud was previously installed....
-	if [ -n "${CURRENT_NEXTCLOUD_VER}" ]; then
-		# Database migrations from ownCloud are no longer possible because ownCloud cannot be run under
-		# PHP 7.
-
-		if [ -e "$STORAGE_ROOT/owncloud/config.php" ]; then
-			# Remove the read-onlyness of the config, which is needed for migrations, especially for v24
-			sed -i -e '/config_is_read_only/d' "$STORAGE_ROOT/owncloud/config.php"
-		fi
-
-		if [[ ${CURRENT_NEXTCLOUD_VER} =~ ^[89] ]]; then
-			echo "Upgrades from Mail-in-a-Box prior to v0.28 (dated July 30, 2018) with Nextcloud < 13.0.6 (you have ownCloud 8 or 9) are not supported. Upgrade to Mail-in-a-Box version v0.30 first. Setup will continue, but skip the Nextcloud migration."
-			return 0
-		elif [[ ${CURRENT_NEXTCLOUD_VER} =~ ^1[012] ]]; then
-			echo "Upgrades from Mail-in-a-Box prior to v0.28 (dated July 30, 2018) with Nextcloud < 13.0.6 (you have ownCloud 10, 11 or 12) are not supported. Upgrade to Mail-in-a-Box version v0.30 first. Setup will continue, but skip the Nextcloud migration."
-			return 0
-		elif [[ ${CURRENT_NEXTCLOUD_VER} =~ ^1[3456789] ]]; then
-			echo "Upgrades from Mail-in-a-Box prior to v60 with Nextcloud 19 or earlier are not supported. Upgrade to the latest Mail-in-a-Box version supported on your machine first. Setup will continue, but skip the Nextcloud migration."
-			return 0
-		fi
-
-		# Hint: whenever you bump, remember this:
-		# - Run a server with the previous version
-		# - On a new if-else block, copy the versions/hashes from the previous version
-		# - Run sudo ./setup/start.sh on the new machine. Upon completion, test its basic functionalities.
-
-		if [[ ${CURRENT_NEXTCLOUD_VER} =~ ^20 ]]; then
-			InstallNextcloud 21.0.7 f5c7079c5b56ce1e301c6a27c0d975d608bb01c9 4.0.7 45e7cf4bfe99cd8d03625cf9e5a1bb2e90549136 3.0.4 d0284b68135777ec9ca713c307216165b294d0fe
-			CURRENT_NEXTCLOUD_VER="21.0.7"
-		fi
-		if [[ ${CURRENT_NEXTCLOUD_VER} =~ ^21 ]]; then
-			InstallNextcloud 22.2.6 9d39741f051a8da42ff7df46ceef2653a1dc70d9 4.1.0 697f6b4a664e928d72414ea2731cb2c9d1dc3077 3.2.2 ce4030ab57f523f33d5396c6a81396d440756f5f 3.0.0 0df781b261f55bbde73d8c92da3f99397000972f
-			CURRENT_NEXTCLOUD_VER="22.2.6"
-		fi
-		if [[ ${CURRENT_NEXTCLOUD_VER} =~ ^22 ]]; then
-			InstallNextcloud 23.0.12 d138641b8e7aabebe69bb3ec7c79a714d122f729 4.1.0 697f6b4a664e928d72414ea2731cb2c9d1dc3077 3.2.2 ce4030ab57f523f33d5396c6a81396d440756f5f 3.0.0 0df781b261f55bbde73d8c92da3f99397000972f
-			CURRENT_NEXTCLOUD_VER="23.0.12"
-		fi
-		if [[ ${CURRENT_NEXTCLOUD_VER} =~ ^23 ]]; then
-			InstallNextcloud 24.0.12 7aa5d61632c1ccf4ca3ff00fb6b295d318c05599 4.1.0 697f6b4a664e928d72414ea2731cb2c9d1dc3077 3.2.2 ce4030ab57f523f33d5396c6a81396d440756f5f 3.0.0 0df781b261f55bbde73d8c92da3f99397000972f
-			CURRENT_NEXTCLOUD_VER="24.0.12"
-		fi
-        if [[ ${CURRENT_NEXTCLOUD_VER} =~ ^24 ]]; then
-			InstallNextcloud 25.0.7 a5a565c916355005c7b408dd41a1e53505e1a080 5.3.0 4b0a6666374e3b55cfd2ae9b72e1d458b87d4c8c 4.4.2 21a42e15806adc9b2618760ef94f1797ef399e2f 3.2.0 a494073dcdecbbbc79a9c77f72524ac9994d2eec
-			CURRENT_NEXTCLOUD_VER="25.0.7"
-		fi
-		if [[ ${CURRENT_NEXTCLOUD_VER} =~ ^25 ]]; then
-			InstallNextcloud 26.0.13 d5c10b650e5396d5045131c6d22c02a90572527c 5.5.3 b234ab410480a4106176a28f39c9b27f471d0473 4.7.6 cf8e68e7d945ee71933f5bb71a969faf152da55c 3.3.0 280d24eb2a6cb56b4590af8847f925c28d8d853e
-			CURRENT_NEXTCLOUD_VER="26.0.13"
-		fi
-	fi
-
-	InstallNextcloud $nextcloud_ver $nextcloud_hash $contacts_ver $contacts_hash $calendar_ver $calendar_hash $user_external_ver $user_external_hash
+if [ -n "$NEXTCLOUD_PLAN" ]; then
+	while read -r version runtime core_hash contacts_version contacts_hash calendar_version calendar_hash external_version external_hash; do
+		# On a fresh install there are no old database compatibility constraints.
+		if [ -z "$CURRENT_NEXTCLOUD_VER" ]; then runtime=$PHP_VER; fi
+		InstallNextcloud "$version" "$runtime" "$core_hash" "$contacts_version" "$contacts_hash" "$calendar_version" "$calendar_hash" "$external_version" "$external_hash"
+	done <<< "$NEXTCLOUD_PLAN"
 fi
 
 # ### Configuring Nextcloud
@@ -376,9 +296,7 @@ hide_output sudo -u www-data php"$PHP_VER" /usr/local/lib/owncloud/console.php a
 # When upgrading, run the upgrade script again now that apps are enabled. It seems like
 # the first upgrade at the top won't work because apps may be disabled during upgrade?
 # Check for success (0=ok, 3=no upgrade needed).
-sudo -u www-data php"$PHP_VER" /usr/local/lib/owncloud/occ upgrade
-E=$?
-if [ $E -ne 0 ] && [ $E -ne 3 ]; then exit 1; fi
+nextcloud_occ_upgrade "$PHP_VER"
 
 # Disable default apps that we don't support
 sudo -u www-data \
@@ -388,8 +306,8 @@ sudo -u www-data \
 # Set PHP FPM values to support large file uploads
 # (semicolon is the comment character in this file, hashes produce deprecation warnings)
 tools/editconf.py /etc/php/"$PHP_VER"/fpm/php.ini -c ';' \
-	upload_max_filesize=16G \
-	post_max_size=16G \
+	upload_max_filesize=1G \
+	post_max_size=1100M \
 	output_buffering=16384 \
 	memory_limit=512M \
 	max_execution_time=600 \
@@ -418,8 +336,8 @@ sqlite3 "$STORAGE_ROOT/owncloud/owncloud.db" "UPDATE oc_users_external SET backe
 cat > /etc/cron.d/mailinabox-nextcloud << EOF;
 #!/bin/bash
 # Mail-in-a-Box
-*/5 * * * *	www-data	php$PHP_VER -f /usr/local/lib/owncloud/cron.php
-*/5 * * * *	www-data	php$PHP_VER -f /usr/local/lib/owncloud/occ dav:send-event-reminders
+*/5 * * * *	www-data	[ ! -e /var/lib/mailinabox/php-maintenance ] && php$PHP_VER -f /usr/local/lib/owncloud/cron.php
+*/5 * * * *	www-data	[ ! -e /var/lib/mailinabox/php-maintenance ] && php$PHP_VER -f /usr/local/lib/owncloud/occ dav:send-event-reminders
 EOF
 chmod +x /etc/cron.d/mailinabox-nextcloud
 

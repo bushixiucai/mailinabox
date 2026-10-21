@@ -49,31 +49,83 @@ It also supports static website hosting since the box is serving HTTPS anyway. (
 For more information on how Mail-in-a-Box handles your privacy, see the [security details page](security.md).
 
 
-Installation
-------------
+Installation and fork updates
+-----------------------------
 
-See the [setup guide](https://mailinabox.email/guide.html) for detailed, user-friendly instructions.
+This fork supports Ubuntu 22.04 LTS. Its installer and update source are this repository:
 
-For experts, start with a completely fresh (really, I mean it) Ubuntu 22.04 LTS 64-bit machine. On the machine...
+```sh
+curl -fsSL https://raw.githubusercontent.com/bushixiucai/mailinabox/main/setup.sh | sudo -E bash
+```
 
-Clone this repository and checkout the tag corresponding to the most recent release (which you can find in the tags or releases lists on GitHub):
+The entry point clones this fork into `/root/mailinabox` (override with
+`MIAB_INSTALL_DIR`), refuses dirty checkouts and defaults to the published `v80` tag. Branch updates use fast-forward only.
+It also switches an unmodified upstream checkout to this fork. Set `TAG` explicitly
+to use another release tag or branch. Existing installations run the scoped PHP application
+upgrade; fresh machines run the complete server installer. The upstream command at
+`mailinabox.email/setup.sh` must not be used to update this fork.
 
-	$ git clone https://github.com/mail-in-a-box/mailinabox
-	$ cd mailinabox
-	$ git checkout TAGNAME
+### PHP application versions and migration
 
-Begin the installation.
+The target combination is PHP 8.4.27+, Nextcloud 34.0.5, Contacts 8.9.2, Calendar
+6.6.3, user_external 4.0.0, Roundcube 1.7.5, CardDAV 5.1.4 and Z-Push 2.7.6.
+Mail, calendar, contacts, ActiveSync and existing webmail plugin features are retained.
+SMTP, IMAP and the Python management service remain separate.
 
-	$ sudo setup/start.sh
+For an already updated checkout, the scoped upgrade command is:
 
-The installation will install, uninstall, and configure packages to turn the machine into a working, good mail server.
+```sh
+sudo setup/upgrade-php.sh
+```
 
-For help, DO NOT contact Josh directly --- I don't do tech support by email or tweet (no exceptions).
+When patched packages are unavailable, a release installer first downloads the verified
+source-built package bundle from this fork's matching GitHub release. If the bundle is
+unavailable, the upgrade builds the official PHP release
+using the source and Debian packaging hashes in `tools/php-build-lock.json`. The build
+runs in a pinned Ubuntu Docker image; Docker is installed only if needed. The generated
+packages preserve the existing FPM paths and extension API. Build dependencies are
+recorded, but byte-identical output across changing Ubuntu package archives is not claimed.
 
-Post your question on the [discussion forum](https://discourse.mailinabox.email/) instead, where maintainers and Mail-in-a-Box users may be able to help you.
+You can also build and inspect artifacts before installing them:
 
-Note that while we want everything to "just work," we can't control the rest of the Internet. Other mail services might block or spam-filter email sent from your Mail-in-a-Box.
-This is a challenge faced by everyone who runs their own mail server, with or without Mail-in-a-Box. See our discussion forum for tips about that.
+```sh
+PHP_BUILD_JOBS=4 tools/build-php.sh /absolute/empty-build-output
+sudo tools/install-built-php.sh /absolute/empty-build-output
+```
+
+The output includes Debian packages, SHA256SUMS, provenance, dependency inventory and
+build logs. Installation verifies package identities and keeps FPM masked; the scoped
+upgrade subsequently migrates applications before reopening traffic. To update PHP again,
+review a new official release, update the lock file and hashes, then rebuild and validate.
+
+The upgrade locks concurrent runs, closes PHP web routes and scheduled Nextcloud
+jobs, masks FPM package autostarts, backs up application code, storage and configuration,
+then migrates consecutive Nextcloud major versions. PHP 8.2.35+ CLI handles Nextcloud
+27 through 31; PHP 8.4.27+ handles the remaining stages. Each stage checks the archive
+SHA256, app compatibility and resulting database version. The external IMAP app is
+briefly disabled at NC30 without uninstalling its data and restored at NC31. Versions
+older than NC27 must first migrate using a compatible older installer.
+
+Private backups are stored under `$STORAGE_ROOT/php-upgrade-backups`; the latest
+path is recorded in `/var/lib/mailinabox/php-upgrade-backup`. Ensure sufficient free
+space for every intermediate core and an independent server backup before starting.
+Any migration failure keeps `/var/lib/mailinabox/php-maintenance` present and PHP
+workers stopped. Never remove that marker to bypass an incomplete upgrade. Restore
+application code, configuration and database/data together: reverting Git does not
+reverse database migrations. Old FPM units remain masked after success.
+
+Before accepting a production upgrade, verify actual FPM and CLI versions, login,
+password changes, attachments, CardDAV/CalDAV, remembered sessions, desktop
+notifications and ActiveSync clients. Automated checks do not establish device acceptance.
+
+### Focused checks
+
+```sh
+python3 -m unittest discover -s tests -p 'test_nextcloud_migration.py'
+python3 -m unittest discover -s tests -p 'test_php_*.py'
+bash tests/test_php_security.sh  # Debian/Ubuntu dpkg required
+bash -n setup/*.sh setup.sh tools/install-built-php.sh
+```
 
 
 Contributing and Development

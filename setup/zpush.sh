@@ -13,11 +13,18 @@
 source setup/functions.sh # load our functions
 source /etc/mailinabox.conf # load global vars
 
+if [ -d /usr/local/lib/z-push ] && [ ! -e "$PHP_MAINTENANCE_FILE" ]; then
+	echo 'Use setup/upgrade-php.sh to upgrade an existing Z-Push installation.' >&2
+	exit 1
+fi
+require_safe_php_candidate "$PHP_VER"
+
 # Prereqs.
 
 echo "Installing Z-Push (Exchange/ActiveSync server)..."
 apt_install \
        php"${PHP_VER}"-soap php"${PHP_VER}"-imap libawl-php php"$PHP_VER"-xml php"${PHP_VER}"-intl
+require_safe_php "$PHP_VER"
 
 phpenmod -v "$PHP_VER" imap
 
@@ -32,26 +39,37 @@ elif [[ $VERSION != $(cat /usr/local/lib/z-push/version) ]]; then
 	needs_update=1 #NODOC
 fi
 if [ $needs_update == 1 ]; then
+	ZPUSH_STAGING=$(mktemp -d /usr/local/lib/z-push-install.XXXXXX)
 	# Download
-	wget_verify "https://github.com/Z-Hub/Z-Push/archive/refs/tags/$VERSION.zip" $TARGETHASH /tmp/z-push.zip
+	wget_verify "https://github.com/Z-Hub/Z-Push/archive/refs/tags/$VERSION.zip" $TARGETHASH "$ZPUSH_STAGING/z-push.zip"
 
-	# Extract into place.
-	rm -rf /usr/local/lib/z-push /tmp/z-push
-	unzip -q /tmp/z-push.zip -d /tmp/z-push
-	mv /tmp/z-push/*/src /usr/local/lib/z-push
-	rm -rf /tmp/z-push.zip /tmp/z-push
+	# Complete extraction before replacing the installed tree.
+	unzip -q "$ZPUSH_STAGING/z-push.zip" -d "$ZPUSH_STAGING"
+	rm -f "$ZPUSH_STAGING/z-push.zip"
+	if [ -d /usr/local/lib/z-push ]; then
+		mv /usr/local/lib/z-push "$ZPUSH_STAGING/previous"
+	fi
+	if ! mv "$ZPUSH_STAGING/Z-Push-$VERSION/src" /usr/local/lib/z-push; then
+		if [ -d "$ZPUSH_STAGING/previous" ]; then
+			mv "$ZPUSH_STAGING/previous" /usr/local/lib/z-push
+		fi
+		exit 1
+	fi
+	if [ -d "$ZPUSH_STAGING/previous" ]; then
+		echo "Previous Z-Push installation retained at $ZPUSH_STAGING/previous"
+	fi
 
-	# Create admin and top scripts with PHP_VER  
-	rm -f /usr/sbin/z-push-{admin,top}
-    echo '#!/bin/bash' > /usr/sbin/z-push-admin
-    echo php"$PHP_VER" /usr/local/lib/z-push/z-push-admin.php '"$@"' >> /usr/sbin/z-push-admin
-    chmod 755 /usr/sbin/z-push-admin
-    echo '#!/bin/bash' > /usr/sbin/z-push-top
-    echo php"$PHP_VER" /usr/local/lib/z-push/z-push-top.php '"$@"' >> /usr/sbin/z-push-top
-    chmod 755 /usr/sbin/z-push-top
-	
 	echo $VERSION > /usr/local/lib/z-push/version
 fi
+
+# Refresh wrappers even when only the PHP runtime changes.
+for command in admin top; do
+	cat > /usr/sbin/z-push-$command <<EOF;
+#!/bin/bash
+exec php"$PHP_VER" /usr/local/lib/z-push/z-push-$command.php "\$@"
+EOF
+	chmod 755 /usr/sbin/z-push-$command
+done
 
 # Configure default config.
 sed -i "s^define('TIMEZONE', .*^define('TIMEZONE', '$(cat /etc/timezone)');^" /usr/local/lib/z-push/config.php

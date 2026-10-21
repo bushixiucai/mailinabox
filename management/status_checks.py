@@ -973,21 +973,18 @@ def list_apt_updates(apt_update=True):
 	return pkgs
 
 def what_version_is_this(env):
-	# This function runs `git describe --always --abbrev=0` on the Mail-in-a-Box installation directory.
-	# Git may not be installed and Mail-in-a-Box may not have been cloned from github,
-	# so this function may raise all sorts of exceptions.
 	miab_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-	return shell("check_output", ["/usr/bin/git", "describe", "--always", "--abbrev=0"], env={"GIT_DIR": os.path.join(miab_dir, '.git')}).strip()
+	return shell("check_output", ["/usr/bin/git", "-C", miab_dir, "describe", "--tags", "--always", "--abbrev=0"]).strip()
 
 def get_latest_miab_version():
-	# This pings https://mailinabox.email/setup.sh and extracts the tag named in
-	# the script to determine the current product version.
-    from urllib.request import urlopen, HTTPError, URLError
+	from urllib.request import urlopen
 
-    try:
-        return re.search(b'TAG=(.*)', urlopen("https://mailinabox.email/setup.sh?ping=1", timeout=5).read()).group(1).decode("utf8")
-    except (TimeoutError, HTTPError, URLError):
-        return None
+	try:
+		with urlopen("https://raw.githubusercontent.com/bushixiucai/mailinabox/main/setup.sh", timeout=10) as response:
+			match = re.search(rb"^\s*TAG=(v[0-9A-Za-z._-]+)\s*$", response.read(), re.MULTILINE)
+		return match.group(1).decode("ascii") if match else None
+	except (OSError, ValueError):
+		return None
 
 def check_miab_version(env, output):
 	config = load_settings(env)
@@ -1007,7 +1004,7 @@ def check_miab_version(env, output):
 		elif latest_ver is None:
 			output.print_error(f"Latest Mail-in-a-Box version could not be determined. You are running version {this_ver}.")
 		else:
-			output.print_error(f"A new version of Mail-in-a-Box is available. You are running version {this_ver}. The latest version is {latest_ver}. For upgrade instructions, see https://mailinabox.email. ")
+			output.print_error(f"A new version of Mail-in-a-Box is available. You are running version {this_ver}. The latest version is {latest_ver}. For upgrade instructions, see https://github.com/bushixiucai/mailinabox#installation-and-fork-updates. ")
 
 def run_and_output_changes(env, pool):
 	import json

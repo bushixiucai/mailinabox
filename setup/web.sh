@@ -19,7 +19,10 @@ fi
 
 echo "Installing Nginx (web server)..."
 
+require_safe_php_candidate "$PHP_VER"
 apt_install nginx php"${PHP_VER}"-cli php"${PHP_VER}"-fpm idn2
+
+require_safe_php "$PHP_VER"
 
 rm -f /etc/nginx/sites-enabled/default
 
@@ -56,6 +59,8 @@ tools/editconf.py /etc/php/"$PHP_VER"/fpm/php.ini -c ';' \
 # Configure the path environment for php-fpm
 tools/editconf.py /etc/php/"$PHP_VER"/fpm/pool.d/www.conf -c ';' \
 	env[PATH]=/usr/local/bin:/usr/bin:/bin \
+	listen=/run/php/mailinabox-fpm.sock \
+	"php_admin_flag[session.upload_progress.enabled]=off"
 
 # Configure php-fpm based on the amount of memory the machine has
 # This is based on the nextcloud manual for performance tuning: https://docs.nextcloud.com/server/17/admin_manual/installation/server_tuning.html

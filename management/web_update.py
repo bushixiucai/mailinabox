@@ -109,11 +109,17 @@ def do_web_update(env):
 			# Add default 'www.' redirect.
 			nginx_conf += make_domain_config(domain, [template0, template3], ssl_certificates, env)
 
+	# Keep PHP routes closed across automatic configuration regeneration during upgrades.
+	if os.path.exists("/var/lib/mailinabox/php-maintenance"):
+		nginx_conf = nginx_conf.replace("fastcgi_pass php-fpm;", "return 503;")
+
 	# Did the file change? If not, don't bother writing & restarting nginx.
 	nginx_conf_fn = "/etc/nginx/conf.d/local.conf"
+	previous_config = None
 	if os.path.exists(nginx_conf_fn):
 		with open(nginx_conf_fn, encoding='utf-8') as f:
-			if f.read() == nginx_conf:
+			previous_config = f.read()
+			if previous_config == nginx_conf:
 				return ""
 
 	# Save the file.
@@ -124,7 +130,17 @@ def do_web_update(env):
 	# don't do a 'restart'. That would kill the connection before
 	# the API returns its response. A 'reload' should be good
 	# enough and doesn't break any open connections.
-	shell('check_call', ["/usr/sbin/service", "nginx", "reload"])
+	try:
+		shell('check_call', ["/usr/sbin/nginx", "-t"])
+		shell('check_call', ["/usr/sbin/service", "nginx", "reload"])
+	except Exception:
+		# Keep the last working configuration if validation or reload fails.
+		if previous_config is None:
+			os.unlink(nginx_conf_fn)
+		else:
+			with open(nginx_conf_fn, "w", encoding='utf-8') as f:
+				f.write(previous_config)
+		raise
 
 	return "web updated\n"
 

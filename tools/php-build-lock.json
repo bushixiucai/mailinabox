@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "base_image": "ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956",
+  "platform": "linux/amd64",
+  "distribution": "ubuntu22.04",
+  "architecture": "amd64",
+  "build_date": "Thu, 22 Oct 2026 00:00:00 +0000",
+  "branches": {
+    "8.4": {
+      "php_version": "8.4.27",
+      "php_api": "20240924",
+      "package_version": "8.4.27-1+urmail1",
+      "packaging_version": "8.4.27-1+ubuntu22.04.1+deb.sury.org+1",
+      "official_release_metadata": "https://www.php.net/releases/index.php?json&version=8.4.27",
+      "upstream": {
+        "filename": "php-8.4.27.tar.xz",
+        "url": "https://www.php.net/distributions/php-8.4.27.tar.xz",
+        "sha256": "dcf93923b0e38e0d5252b25b796520b5a47761a08b3488b6d0b5d1115764d3f0"
+      },
+      "dsc": {
+        "filename": "php8.4_8.4.27-1+ubuntu22.04.1+deb.sury.org+1.dsc",
+        "url": "https://launchpad.net/~ondrej/+archive/ubuntu/php/+sourcefiles/php8.4/8.4.27-1+ubuntu22.04.1+deb.sury.org+1/php8.4_8.4.27-1+ubuntu22.04.1+deb.sury.org+1.dsc",
+        "sha256": "717c2e33fda1d6a5d2ba7ead7ca49af9839aa913e0f38b4e8f5bde4000fa93d6"
+      },
+      "packaging": {
+        "filename": "php8.4_8.4.27-1+ubuntu22.04.1+deb.sury.org+1.debian.tar.xz",
+        "url": "https://launchpad.net/~ondrej/+archive/ubuntu/php/+sourcefiles/php8.4/8.4.27-1+ubuntu22.04.1+deb.sury.org+1/php8.4_8.4.27-1+ubuntu22.04.1+deb.sury.org+1.debian.tar.xz",
+        "sha256": "91c68139f962d8a2f7b339abe206cf5a8677fa8476ee0b99a33eb81add532492"
+      }
+    },
+    "8.2": {
+      "php_version": "8.2.35",
+      "php_api": "20220829",
+      "package_version": "8.2.35-1+urmail1",
+      "packaging_version": "8.2.35-1+ubuntu22.04.1+deb.sury.org+1",
+      "official_release_metadata": "https://www.php.net/releases/index.php?json&version=8.2.35",
+      "upstream": {
+        "filename": "php-8.2.35.tar.xz",
+        "url": "https://www.php.net/distributions/php-8.2.35.tar.xz",
+        "sha256": "5737b98601fe5ab1b8c5db0c82ed3158acb9283ed3081ffe2faffb9ac81455e6"
+      },
+      "dsc": {
+        "filename": "php8.2_8.2.35-1+ubuntu22.04.1+deb.sury.org+1.dsc",
+        "url": "https://launchpad.net/~ondrej/+archive/ubuntu/php/+sourcefiles/php8.2/8.2.35-1+ubuntu22.04.1+deb.sury.org+1/php8.2_8.2.35-1+ubuntu22.04.1+deb.sury.org+1.dsc",
+        "sha256": "d309c88759f45530f23d604498e877e1e483123793762f96e93cc7694a5026f9"
+      },
+      "packaging": {
+        "filename": "php8.2_8.2.35-1+ubuntu22.04.1+deb.sury.org+1.debian.tar.xz",
+        "url": "https://launchpad.net/~ondrej/+archive/ubuntu/php/+sourcefiles/php8.2/8.2.35-1+ubuntu22.04.1+deb.sury.org+1/php8.2_8.2.35-1+ubuntu22.04.1+deb.sury.org+1.debian.tar.xz",
+        "sha256": "21e2a07d76053b42eab2fcc2ab729e9e697249a43cd673e7bf4eb471f8a87257"
+      }
+    }
+  }
+}

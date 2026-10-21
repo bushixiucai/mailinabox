@@ -5,7 +5,55 @@
 # -o pipefail: don't ignore errors in the non-last command in a pipeline
 set -euo pipefail
 
-PHP_VER=8.0
+PHP_VER=8.4
+PHP_MAINTENANCE_FILE=/var/lib/mailinabox/php-maintenance
+
+function php_security_floor {
+	case "$1" in
+		8.2) echo 8.2.35 ;;
+		8.3) echo 8.3.36 ;;
+		8.4) echo 8.4.27 ;;
+		8.5) echo 8.5.12 ;;
+		*) echo "Unsupported PHP branch: $1" >&2; return 1 ;;
+	esac
+}
+
+function require_safe_php_candidate {
+	local branch=$1 floor candidate upstream
+	floor=$(php_security_floor "$branch") || return 1
+	candidate=$(apt-cache policy "php${branch}-cli" | awk '/Candidate:/ {print $2}')
+	upstream=${candidate#*:}
+	upstream=${upstream%%-*}
+	if [[ "$upstream" != "$branch".* ]] || ! dpkg --compare-versions "$upstream" ge "$floor"; then
+		echo "PHP $branch requires $floor or newer; candidate is ${candidate:-missing}." >&2
+		return 1
+	fi
+	# Check FPM separately: repositories may publish CLI and FPM at different times.
+	candidate=$(apt-cache policy "php${branch}-fpm" | awk '/Candidate:/ {print $2}')
+	upstream=${candidate#*:}
+	upstream=${upstream%%-*}
+	if [[ "$upstream" != "$branch".* ]] || ! dpkg --compare-versions "$upstream" ge "$floor"; then
+		echo "PHP $branch FPM requires $floor or newer; candidate is ${candidate:-missing}." >&2
+		return 1
+	fi
+}
+
+function require_safe_php {
+	local branch=$1 floor actual
+	floor=$(php_security_floor "$branch") || return 1
+	actual=$("php$branch" -r 'echo PHP_VERSION;') || return 1
+	if [[ "$actual" != "$branch".* ]] || ! dpkg --compare-versions "$actual" ge "$floor"; then
+		echo "Refusing vulnerable PHP $actual; $floor or newer is required." >&2
+		return 1
+	fi
+	if [ -x "/usr/sbin/php-fpm$branch" ]; then
+		actual=$("/usr/sbin/php-fpm$branch" -v | awk 'NR == 1 {print $2}') || return 1
+		if [[ "$actual" != "$branch".* ]] || ! dpkg --compare-versions "$actual" ge "$floor"; then
+			echo "Refusing vulnerable PHP-FPM $actual; $floor or newer is required." >&2
+			return 1
+		fi
+	fi
+}
 
 function hide_output {
 	# This function hides the output of a command unless the command fails
@@ -150,6 +198,16 @@ function ufw_limit {
 }
 
 function restart_service {
+	case "$1" in
+		php*-fpm)
+			if [ -e "$PHP_MAINTENANCE_FILE" ]; then
+				echo "Deferring $1 restart until PHP migration validation completes."
+				return 0
+			fi
+			local branch=${1#php}
+			require_safe_php "${branch%-fpm}" || return 1
+			;;
+	esac
 	hide_output service "$1" restart
 }
 

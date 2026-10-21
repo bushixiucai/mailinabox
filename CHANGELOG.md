@@ -1,6 +1,16 @@
 CHANGELOG
 =========
 
+Version 80 (October 22, 2026)
+-----------------------------
+
+* Publish a fork-owned installer and source-built PHP package workflow.
+* Require PHP 8.4.27+ and isolate PHP application upgrades from SMTP/IMAP setup.
+* Migrate Nextcloud 27 through consecutive major versions to 34.0.5 using a PHP 8.2 CLI bridge.
+* Update Roundcube to 1.7.5 and CardDAV to 5.1.4, retaining existing plugin features.
+* Keep PHP routes in persistent maintenance during migration and reject unsafe packages.
+* Stage verified archives before replacement, preserve recovery data, and validate Nginx before reload.
+
 Version 77 (September 26, 2026)
 -------------------------------
 

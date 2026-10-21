@@ -5,6 +5,13 @@
 source setup/functions.sh # load our functions
 source /etc/mailinabox.conf # load global vars
 
+# Existing installations must be upgraded with traffic and PHP workers stopped.
+if [ -d /usr/local/lib/roundcubemail ] && [ ! -e "$PHP_MAINTENANCE_FILE" ]; then
+	echo 'Use setup/upgrade-php.sh to upgrade an existing Roundcube installation.' >&2
+	exit 1
+fi
+require_safe_php_candidate "$PHP_VER"
+
 # ### Installing Roundcube
 
 # We install Roundcube from sources, rather than from Ubuntu, because:
@@ -25,6 +32,7 @@ apt_install \
 	php"${PHP_VER}"-cli php"${PHP_VER}"-sqlite3 php"${PHP_VER}"-intl php"${PHP_VER}"-common php"${PHP_VER}"-curl php"${PHP_VER}"-imap \
 	php"${PHP_VER}"-gd php"${PHP_VER}"-pspell php"${PHP_VER}"-mbstring php"${PHP_VER}"-xml libjs-jquery libjs-jquery-mousewheel libmagic1 \
 	sqlite3
+require_safe_php "$PHP_VER"
 
 # Install Roundcube from source if it is not already present or if it is out of date.
 # Combine the Roundcube version number with the commit hash of plugins to track
@@ -36,12 +44,12 @@ apt_install \
 #   https://github.com/mstilkerich/rcmcarddav/releases
 # The easiest way to get the package hashes is to run this script and get the hash from
 # the error message.
-VERSION=1.6.19
-HASH=d30d11f91857b1962879e06a19ef217dceeb506c
+VERSION=1.7.5
+HASH=396b2fa0153bf6b4a8ab99f136b27e16d9f74e57
 PERSISTENT_LOGIN_VERSION=bde7b6840c7d91de627ea14e81cf4133cbb3c07a # version 5.3
 HTML5_NOTIFIER_VERSION=68d9ca194212e15b3c7225eb6085dbcf02fd13d7 # version 0.6.4+
-CARDDAV_VERSION=4.4.3
-CARDDAV_HASH=74f8ba7aee33e78beb9de07f7f44b81f6071b644
+CARDDAV_VERSION=5.1.4
+CARDDAV_HASH=f6fb59edf292795ddab6697b44b83e6d05d5eb77
 
 UPDATE_KEY=$VERSION:$PERSISTENT_LOGIN_VERSION:$HTML5_NOTIFIER_VERSION:$CARDDAV_VERSION
 
@@ -66,31 +74,48 @@ if [ $needs_update == 1 ]; then
     fi
   fi
 
-	# install roundcube
+	# Stage the complete core and all plugins before replacing the installed tree.
+	RCM_STAGING=$(mktemp -d /usr/local/lib/roundcubemail-install.XXXXXX)
+	RCM_STAGED_DIR=$RCM_STAGING/roundcubemail-$VERSION
+	RCM_STAGED_PLUGIN_DIR=$RCM_STAGED_DIR/plugins
 	wget_verify \
 		https://github.com/roundcube/roundcubemail/releases/download/$VERSION/roundcubemail-$VERSION-complete.tar.gz \
 		$HASH \
-		/tmp/roundcube.tgz
-	tar -C /usr/local/lib --no-same-owner -zxf /tmp/roundcube.tgz
-	rm -rf /usr/local/lib/roundcubemail
-	mv /usr/local/lib/roundcubemail-$VERSION/ $RCM_DIR
-	rm -f /tmp/roundcube.tgz
+		$RCM_STAGING/roundcube.tgz
+	tar -C "$RCM_STAGING" --no-same-owner -zxf "$RCM_STAGING/roundcube.tgz"
+	rm -f "$RCM_STAGING/roundcube.tgz"
 
 	# install roundcube persistent_login plugin
-	git_clone https://github.com/mfreiholz/Roundcube-Persistent-Login-Plugin.git $PERSISTENT_LOGIN_VERSION '' ${RCM_PLUGIN_DIR}/persistent_login
+	git_clone https://github.com/mfreiholz/Roundcube-Persistent-Login-Plugin.git $PERSISTENT_LOGIN_VERSION '' ${RCM_STAGED_PLUGIN_DIR}/persistent_login
 
 	# install roundcube html5_notifier plugin
-	git_clone https://github.com/kitist/html5_notifier.git $HTML5_NOTIFIER_VERSION '' ${RCM_PLUGIN_DIR}/html5_notifier
+	git_clone https://github.com/kitist/html5_notifier.git $HTML5_NOTIFIER_VERSION '' ${RCM_STAGED_PLUGIN_DIR}/html5_notifier
 
 	# download and verify the full release of the carddav plugin
 	wget_verify \
 		https://github.com/mstilkerich/rcmcarddav/releases/download/v${CARDDAV_VERSION}/carddav-v${CARDDAV_VERSION}.tar.gz \
 		$CARDDAV_HASH \
-		/tmp/carddav.tar.gz
+		$RCM_STAGING/carddav.tar.gz
 
 	# unzip and cleanup
-	tar -C ${RCM_PLUGIN_DIR} -zxf /tmp/carddav.tar.gz
-	rm -f /tmp/carddav.tar.gz
+	tar -C ${RCM_STAGED_PLUGIN_DIR} --no-same-owner -zxf "$RCM_STAGING/carddav.tar.gz"
+	rm -f "$RCM_STAGING/carddav.tar.gz"
+
+	# Retain the previous tree for recovery; a failed final rename restores it.
+	if [ -d "$RCM_DIR" ]; then
+		mv "$RCM_DIR" "$RCM_STAGING/previous"
+	fi
+	if ! mv "$RCM_STAGED_DIR" "$RCM_DIR"; then
+		if [ -d "$RCM_STAGING/previous" ]; then
+			mv "$RCM_STAGING/previous" "$RCM_DIR"
+		fi
+		exit 1
+	fi
+	if [ -d "$RCM_STAGING/previous" ]; then
+		echo "Previous Roundcube installation retained at $RCM_STAGING/previous"
+	else
+		rmdir "$RCM_STAGING"
+	fi
 
 	# record the version we've installed
 	echo $UPDATE_KEY > ${RCM_DIR}/version
@@ -154,17 +179,20 @@ cat > ${RCM_PLUGIN_DIR}/carddav/config.inc.php <<EOF;
 <?php
 /* Do not edit. Written by Mail-in-a-Box. Regenerated on updates. */
 \$prefs['_GLOBAL']['hide_preferences'] = true;
-\$prefs['_GLOBAL']['suppress_version_warning'] = true;
 \$prefs['ownCloud'] = array(
+	 'accountname'  =>  'ownCloud',
 	 'name'         =>  'ownCloud',
 	 'username'     =>  '%u', // login username
 	 'password'     =>  '%p', // login password
-	 'url'          =>  'https://${PRIMARY_HOSTNAME}/cloud/remote.php/dav/addressbooks/users/%u/contacts/',
+	 // Keep the existing contacts addressbook instead of discovering additional addressbooks.
+	 'extra_addressbooks' => array(array(
+		 'url' => 'https://${PRIMARY_HOSTNAME}/cloud/remote.php/dav/addressbooks/users/%u/contacts/',
+	 )),
 	 'active'       =>  true,
 	 'readonly'     =>  false,
 	 'refresh_time' => '02:00:00',
 	 'fixed'        =>  array('username','password'),
-	 'preemptive_auth' => '1',
+	 'preemptive_basic_auth' => true,
 	 'hide'        =>  false,
 );
 ?>
