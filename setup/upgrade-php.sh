@@ -76,8 +76,8 @@ if ! require_safe_php_candidate "$PHP_VER"; then
 	php_upgrade_release_url="https://github.com/bushixiucai/mailinabox/releases/download/$php_upgrade_release"
 	php_upgrade_fetched=0
 	if [ -n "$php_upgrade_release" ] && [ "$(dpkg --print-architecture)" = amd64 ]; then
-		if curl -fLsS --retry 3 "$php_upgrade_release_url/$php_upgrade_bundle" -o "$php_upgrade_build/$php_upgrade_bundle" && \
-			curl -fLsS --retry 3 "$php_upgrade_release_url/$php_upgrade_bundle.sha256" -o "$php_upgrade_build/$php_upgrade_bundle.sha256"; then
+		if curl -fLsS --retry 3 --connect-timeout 20 --max-time 300 "$php_upgrade_release_url/$php_upgrade_bundle" -o "$php_upgrade_build/$php_upgrade_bundle" && \
+			curl -fLsS --retry 3 --connect-timeout 20 --max-time 300 "$php_upgrade_release_url/$php_upgrade_bundle.sha256" -o "$php_upgrade_build/$php_upgrade_bundle.sha256"; then
 			(cd "$php_upgrade_build"; sha256sum --check --strict "$php_upgrade_bundle.sha256")
 			tar -xJf "$php_upgrade_build/$php_upgrade_bundle" -C "$php_upgrade_build"
 			php_upgrade_fetched=1

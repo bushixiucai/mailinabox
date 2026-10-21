@@ -4,14 +4,27 @@ set -Eeuo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source setup/functions.sh
 [ "$EUID" -eq 0 ] || { echo 'Run this script as root.' >&2; exit 1; }
-[ "$#" -eq 1 ] || { echo 'Usage: sudo tools/install-built-php.sh BUILD_OUTPUT' >&2; exit 1; }
+source /etc/os-release
+[ "$ID:$VERSION_ID" = ubuntu:22.04 ] || { echo 'Ubuntu 22.04 is required.' >&2; exit 1; }
+[ "$#" -ge 1 ] && [ "$#" -le 2 ] || { echo 'Usage: sudo tools/install-built-php.sh BUILD_OUTPUT [--verify-only]' >&2; exit 1; }
+php_build_mode=${2:-install}
+[ "$php_build_mode" = install ] || [ "$php_build_mode" = --verify-only ] || exit 1
 php_build_output=$(realpath "$1")
 [ -f "$php_build_output/SHA256SUMS" ]
 [ -f "$php_build_output/provenance.json" ]
 (cd "$php_build_output"; sha256sum --check --strict SHA256SUMS)
-python3 - "$php_build_output/provenance.json" <<'PY'
-import json, sys
-p = json.load(open(sys.argv[1]))
+python3 - "$php_build_output" tools/php-build-lock.json <<'PY'
+import json, pathlib, sys
+output = pathlib.Path(sys.argv[1])
+p = json.loads((output / 'provenance.json').read_text())
+locked = json.load(open(sys.argv[2]))['branches']['8.4']
+for field in ('upstream', 'dsc', 'packaging'):
+    if p.get(field, {}).get('sha256') != locked[field]['sha256']:
+        sys.exit('Source provenance does not match the reviewed build lock: ' + field)
+checked = {line.split(None, 1)[1].lstrip('*').removeprefix('./')
+           for line in (output / 'SHA256SUMS').read_text().splitlines() if line.strip()}
+if any(archive.name not in checked for archive in output.glob('*.deb')):
+    sys.exit('An unverified Debian package exists in the build output.')
 if p.get('php_version') != '8.4.27' or p.get('package_version') != '8.4.27-1+urmail1':
     sys.exit('Unexpected PHP build provenance. Review a new pinned build before installing.')
 if p.get('status') != 'built':
@@ -37,6 +50,11 @@ done
 for package in php8.4-cli php8.4-common php8.4-fpm php8.4-sqlite3 php8.4-curl php8.4-xml; do
 	[[ "$php_build_names" == *" $package "* ]] || { echo "Missing required build package: $package" >&2; exit 1; }
 done
+
+if [ "$php_build_mode" = --verify-only ]; then
+	printf 'Verified %s source-built PHP packages; no system changes made.\n' "${#php_build_packages[@]}"
+	exit 0
+fi
 
 # The existing web application installation is untouched. Keep old and new FPM
 # units masked until setup/upgrade-php.sh finishes database and application checks.

@@ -49,6 +49,10 @@ else
 	echo "The requested fork version was not found: $TAG" >&2
 	exit 1
 fi
+[ -x setup/upgrade-php.sh ] || {
+	echo 'The selected version predates the supported fork migration. Use v80 or newer.' >&2
+	exit 1
+}
 printf 'Using fork revision: %s\n' "$(git rev-parse HEAD)"
 if [ -f /etc/mailinabox.conf ]; then
 	# Existing installations only need the scoped PHP application migration.
