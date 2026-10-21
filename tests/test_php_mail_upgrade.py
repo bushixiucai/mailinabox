@@ -2,6 +2,7 @@
 
 import io
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tarfile
@@ -72,6 +73,32 @@ git_clone() {
                 previous = list(root.glob("roundcubemail-install.*/previous/preserve-me"))
                 self.assertEqual(len(previous), 1)
                 self.assertEqual(previous[0].read_text(), "original")
+
+    def test_roundcube_encryption_key_survives_source_replacement(self):
+        php = shutil.which("php") or "/opt/homebrew/opt/php@8.4/bin/php"
+        if not Path(php).is_file():
+            self.skipTest("PHP CLI is unavailable")
+        source = (REPO / "setup/webmail.sh").read_text()
+        capture = source.split("# Preserve the installation encryption key", 1)[1].split("needs_update=", 1)[0]
+        generate = source.split("# Generate a secret key", 1)[1].split("# Create a configuration file.", 1)[0]
+        # Keep comments in extracted production code syntactically intact.
+        capture = "# Preserve the installation encryption key" + capture
+        generate = "# Generate a secret key" + generate
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "config.php"
+            secret = "existing-$-key-with-'quote-and-\\slash"
+            literal = subprocess.check_output([php, "-r", "echo var_export($argv[1], true);", secret], text=True)
+            config.write_text("<?php $config = ['des_key' => " + literal + "];\n")
+            script = ('set -euo pipefail\nPHP_VER=8.4\n'
+                      'php8.4() { "$TEST_PHP" "$@"; }\n' + capture
+                      + '\nrm "$RCM_CONFIG"\n' + generate
+                      + '\nprintf "%s" "$RCM_SECRET_KEY_LITERAL"\n')
+            result = subprocess.run(["bash", "-c", script], text=True, capture_output=True,
+                                    env=os.environ | {"RCM_CONFIG": str(config), "TEST_PHP": php})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, literal)
+            decoded = subprocess.check_output([php, "-r", "$key = " + result.stdout + "; echo $key;"], text=True)
+            self.assertEqual(decoded, secret)
 
     def test_zpush_runtime_refresh_preserves_arguments(self):
         source = (REPO / "setup/zpush.sh").read_text()

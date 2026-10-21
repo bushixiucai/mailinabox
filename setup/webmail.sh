@@ -58,6 +58,21 @@ RCM_DIR=/usr/local/lib/roundcubemail
 RCM_PLUGIN_DIR=${RCM_DIR}/plugins
 RCM_CONFIG=${RCM_DIR}/config/config.inc.php
 
+# Preserve the installation encryption key before replacing the source tree.
+# Rotating it on every update invalidates remembered logins and encrypted credentials.
+RCM_SECRET_KEY_LITERAL=""
+if [ -f "$RCM_CONFIG" ]; then
+	RCM_SECRET_KEY_LITERAL=$(php"$PHP_VER" -r '
+		$config = array();
+		include $argv[1];
+		if (!isset($config["des_key"]) || !is_string($config["des_key"]) || $config["des_key"] === "") {
+			fwrite(STDERR, "Existing Roundcube configuration has no valid encryption key.\n");
+			exit(1);
+		}
+		echo var_export($config["des_key"], true);
+	' "$RCM_CONFIG")
+fi
+
 needs_update=0 #NODOC
 if [ ! -f /usr/local/lib/roundcubemail/version ]; then
 	# not installed yet #NODOC
@@ -125,7 +140,9 @@ fi
 
 # Generate a secret key of PHP-string-safe characters appropriate
 # for the cipher algorithm selected below.
-SECRET_KEY=$(dd if=/dev/urandom bs=1 count=32 2>/dev/null | base64 | sed s/=//g)
+if [ -z "$RCM_SECRET_KEY_LITERAL" ]; then
+	RCM_SECRET_KEY_LITERAL=$(php"$PHP_VER" -r 'echo var_export(rtrim(base64_encode(random_bytes(32)), "="), true);')
+fi
 
 # Create a configuration file.
 #
@@ -159,7 +176,7 @@ cat > $RCM_CONFIG <<EOF;
 \$config['support_url'] = 'https://mailinabox.email/';
 \$config['product_name'] = '$PRIMARY_HOSTNAME Webmail';
 \$config['cipher_method'] = 'AES-256-CBC'; # persistent login cookie and potentially other things
-\$config['des_key'] = '$SECRET_KEY'; # 37 characters -> ~256 bits for AES-256, see above
+\$config['des_key'] = $RCM_SECRET_KEY_LITERAL;
 \$config['plugins'] = array('html5_notifier', 'archive', 'zipdownload', 'password', 'managesieve', 'jqueryui', 'persistent_login', 'carddav');
 \$config['skin'] = 'elastic';
 \$config['login_autocomplete'] = 2;
