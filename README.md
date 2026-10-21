@@ -65,6 +65,10 @@ to use another release tag or branch. Existing installations run the scoped PHP 
 upgrade; fresh machines run the complete server installer. The upstream command at
 `mailinabox.email/setup.sh` must not be used to update this fork.
 
+If a fresh installation fails after creating its configuration, rerun the same
+fork installer command. A persistent full-setup marker keeps retries on the
+complete installer until it succeeds; subsequent runs use the scoped upgrade.
+
 ### PHP application versions and migration
 
 The target combination is PHP 8.4.27+, Nextcloud 34.0.5, Contacts 8.9.2, Calendar

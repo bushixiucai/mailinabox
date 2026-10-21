@@ -58,9 +58,15 @@ fi
 	exit 1
 }
 printf 'Using fork revision: %s\n' "$(git rev-parse HEAD)"
-if [ -f /etc/mailinabox.conf ]; then
+MIAB_FULL_SETUP_MARKER=/var/lib/mailinabox/full-setup-in-progress
+if [ -f /etc/mailinabox.conf ] && [ ! -e "$MIAB_FULL_SETUP_MARKER" ]; then
 	# Existing installations only need the scoped PHP application migration.
 	bash setup/upgrade-php.sh
 else
+	# The full installer writes its configuration before all services are ready.
+	# Preserve this marker on failure so a public installer retry resumes full setup.
+	install -d -m 755 /var/lib/mailinabox
+	install -m 644 /dev/null "$MIAB_FULL_SETUP_MARKER"
 	bash setup/start.sh
+	rm "$MIAB_FULL_SETUP_MARKER"
 fi

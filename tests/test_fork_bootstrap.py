@@ -43,6 +43,18 @@ git tag v77
 echo v80 > VERSION
 printf '#!/bin/bash\nprintf "upgrade:%%s\\n" "$(git rev-parse HEAD)" >> /actions\n' > setup/upgrade-php.sh
 printf '#!/bin/bash\nprintf "fresh:%%s\\n" "$(git rev-parse HEAD)" >> /actions\n' > setup/start.sh
+if [ "$CASE" = fresh_retry ]; then
+    cat > setup/start.sh <<'START'
+#!/bin/bash
+set -euo pipefail
+printf 'fresh:%s\n' "$(git rev-parse HEAD)" >> /actions
+touch /etc/mailinabox.conf
+if [ ! -f /first-full-attempt ]; then
+    touch /first-full-attempt
+    exit 42
+fi
+START
+fi
 chmod +x setup/*.sh
 git add . && git commit -qm v80
 git tag v80
@@ -63,7 +75,7 @@ case "$CASE" in
         git add VERSION && git commit -qm private
         old=$(git rev-parse HEAD)
         export TAG=main ;;
-    fresh) export MIAB_INSTALL_DIR=/fresh-checkout; rm /etc/mailinabox.conf ;;
+    fresh|fresh_retry) export MIAB_INSTALL_DIR=/fresh-checkout; rm /etc/mailinabox.conf ;;
 esac
 set +e
 bash /fixture/setup.sh > /bootstrap-output 2>&1
@@ -71,6 +83,19 @@ result=$?
 set -e
 cat /bootstrap-output
 case "$CASE" in
+    fresh_retry)
+        [ "$result" -eq 42 ]
+        [ -f /etc/mailinabox.conf ]
+        [ -f /var/lib/mailinabox/full-setup-in-progress ]
+        [ "$(cat /actions)" = "fresh:$expected" ]
+        bash /fixture/setup.sh
+        [ ! -e /var/lib/mailinabox/full-setup-in-progress ]
+        [ "$(wc -l < /actions)" -eq 2 ]
+        [ "$(sort -u /actions)" = "fresh:$expected" ]
+        bash /fixture/setup.sh
+        [ ! -e /var/lib/mailinabox/full-setup-in-progress ]
+        [ "$(wc -l < /actions)" -eq 3 ]
+        [ "$(tail -1 /actions)" = "upgrade:$expected" ] ;;
     architecture)
         [ "$result" -ne 0 ]
         grep -F 'supports Ubuntu 22.04 amd64 only' /bootstrap-output
@@ -149,6 +174,9 @@ class ForkBootstrapTests(unittest.TestCase):
 
     def test_new_install_clones_v80_and_uses_full_setup(self):
         self.check_case('fresh')
+
+    def test_failed_fresh_install_retries_full_before_scoped_updates(self):
+        self.check_case('fresh_retry')
 
     def test_unsupported_architecture_is_refused_before_upgrade(self):
         self.check_case('architecture')
