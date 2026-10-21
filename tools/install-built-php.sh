@@ -23,6 +23,8 @@ for field in ('upstream', 'dsc', 'packaging'):
         sys.exit('Source provenance does not match the reviewed build lock: ' + field)
 checked = {line.split(None, 1)[1].lstrip('*').removeprefix('./')
            for line in (output / 'SHA256SUMS').read_text().splitlines() if line.strip()}
+if 'provenance.json' not in checked:
+    sys.exit('Build provenance is not covered by the verified checksum manifest.')
 if any(archive.name not in checked for archive in output.glob('*.deb')):
     sys.exit('An unverified Debian package exists in the build output.')
 if any(p.get(key) != locked[key] for key in ('php_version', 'package_version')):
@@ -48,7 +50,11 @@ for archive in "$php_build_output"/*.deb; do
 	php_build_packages+=("$archive")
 	php_build_names+="$package "
 done
-for package in php8.4-cli php8.4-common php8.4-fpm php8.4-sqlite3 php8.4-curl php8.4-xml; do
+# Require every core package used by setup and its production PHP modules.
+# Independently packaged PECL extensions are installed through the configured repository.
+for package in php8.4 php8.4-cli php8.4-common php8.4-fpm php8.4-bcmath php8.4-curl \
+	php8.4-gd php8.4-gmp php8.4-intl php8.4-mbstring php8.4-opcache php8.4-readline \
+	php8.4-soap php8.4-sqlite3 php8.4-xml php8.4-zip; do
 	[[ "$php_build_names" == *" $package "* ]] || { echo "Missing required build package: $package" >&2; exit 1; }
 done
 
