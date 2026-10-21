@@ -78,6 +78,8 @@ dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /qa/installed-pac
 mkdir -p /work/bin /work/source
 tar -C /work/source -xJf "$php_qa_tarball"
 cd "/work/source/php-$php_qa_php_version"
+# Upstream FPM helpers locate a build-tree binary, ignoring the packaged suffix.
+ln -s /usr/sbin/php-fpm8.4 sapi/fpm/php-fpm
 # Multipart helpers launch CGI with -n. Explicitly load the packaged shared
 # mbstring module so that their encoding tests exercise conversion, as a static
 # upstream mbstring build would. All listeners remain inside this private container.
@@ -117,16 +119,36 @@ summary = {'php_version': branch['php_version'], 'package_version': branch['pack
 try:
     root = ET.parse(output / 'junit.xml').getroot()
     cases = list(root.iter('testcase'))
-    skipped = [case.attrib['name'] for case in cases if case.find('skipped') is not None]
-    failures = [case.attrib['name'] for case in cases if case.find('failure') is not None]
+    # The upstream JUnit writer omits early missing-extension skips. The -W
+    # result list includes all selected tests and is the accounting authority.
+    prefix = '/work/source/php-' + branch['php_version'] + '/'
+    records = {}
+    for line in (output / 'all-results.txt').read_text().splitlines():
+        state, path = line.split('\t', 1)
+        assert path.startswith(prefix), 'Unexpected result path: ' + path
+        path = path.removeprefix(prefix)
+        assert path not in records, 'Duplicate result: ' + path
+        records[path] = state
+    selected = set((output / 'selected-tests.txt').read_text().splitlines())
+    assert set(records) == selected, 'Result list does not cover exactly the selected tests'
+    skipped = [name for name, state in records.items() if state == 'SKIPPED']
+    failures = [name for name, state in records.items() if state not in ('PASSED', 'SKIPPED')]
     errors = [case.attrib['name'] for case in cases if case.find('error') is not None or case.find('warning') is not None]
-    allowed_skips = ('oom_hard_limit_exceeded.phpt', 'oom_soft_limit_in_callback.phpt')
-    unexpected_skips = [name for name in skipped if not any(part in name for part in allowed_skips)]
-    passed = len(cases) - len(skipped) - len(failures) - len(errors)
-    summary.update(total=len(cases), passed=passed, failed=len(failures), errors=len(errors),
+    allowed_skips = {'Zend/tests/oom_hard_limit_exceeded.phpt', 'Zend/tests/oom_soft_limit_in_callback.phpt'}
+    unexpected_skips = sorted(set(skipped) - allowed_skips)
+    log = (output / 'upstream-tests.log').read_text()
+    for name in set(skipped) & allowed_skips:
+        assert '[' + name + '] reason: Required extension missing: zend_test' in log, 'Unexpected skip reason: ' + name
+    junit_paths = {case.attrib['name'].split('.phpt', 1)[0] + '.phpt' for case in cases}
+    omitted = selected - junit_paths
+    assert not (junit_paths - selected), 'Unexpected JUnit testcase'
+    assert omitted <= (set(skipped) & allowed_skips), 'JUnit omitted an executed test'
+    passed = sum(state == 'PASSED' for state in records.values())
+    summary.update(total=len(records), passed=passed, failed=len(failures), errors=len(errors),
                    skipped=len(skipped), skipped_tests=skipped, failed_tests=failures,
-                   error_tests=errors, unexpected_skips=unexpected_skips)
-    summary['success'] = (len(cases) == 82 and passed >= 80 and not failures and not errors
+                   error_tests=errors, unexpected_skips=unexpected_skips,
+                   junit_reported_cases=len(cases), junit_omitted_extension_skips=sorted(omitted))
+    summary['success'] = (len(records) == 82 and passed >= 80 and not failures and not errors
                           and not unexpected_skips and summary['runner_exit_status'] == 0)
 except Exception as error:
     summary.update(success=False, report_error=str(error))
